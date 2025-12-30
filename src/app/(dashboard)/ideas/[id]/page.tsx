@@ -25,6 +25,8 @@ import {
   Target,
   Zap,
   Edit,
+  Twitter,
+  Send,
 } from "lucide-react";
 import type {
   PainPoint,
@@ -33,6 +35,7 @@ import type {
   Interview,
   Competitor,
   Content,
+  Tweet,
 } from "@/types";
 
 interface IdeaWithMetrics {
@@ -98,6 +101,7 @@ export default function IdeaDetailPage({ params }: { params: Promise<{ id: strin
   const [interviews, setInterviews] = useState<Interview[]>([]);
   const [competitors, setCompetitors] = useState<Competitor[]>([]);
   const [contentPieces, setContentPieces] = useState<Content[]>([]);
+  const [ideaTweets, setIdeaTweets] = useState<Tweet[]>([]);
   const [loading, setLoading] = useState(true);
 
   // Modal states
@@ -114,7 +118,7 @@ export default function IdeaDetailPage({ params }: { params: Promise<{ id: strin
 
   const fetchAll = async () => {
     try {
-      const [ideaRes, painRes, lpRes, waitRes, intRes, compRes, contRes] = await Promise.all([
+      const [ideaRes, painRes, lpRes, waitRes, intRes, compRes, contRes, tweetsRes] = await Promise.all([
         fetch(`/api/ideas/${id}`),
         fetch(`/api/ideas/${id}/pain-points`),
         fetch(`/api/ideas/${id}/landing-pages`),
@@ -122,6 +126,7 @@ export default function IdeaDetailPage({ params }: { params: Promise<{ id: strin
         fetch(`/api/ideas/${id}/interviews`),
         fetch(`/api/ideas/${id}/competitors`),
         fetch(`/api/ideas/${id}/content`),
+        fetch(`/api/twitter/tweets?ideaId=${id}`),
       ]);
 
       if (!ideaRes.ok) {
@@ -136,6 +141,7 @@ export default function IdeaDetailPage({ params }: { params: Promise<{ id: strin
       setInterviews(await intRes.json());
       setCompetitors(await compRes.json());
       setContentPieces(await contRes.json());
+      setIdeaTweets(await tweetsRes.json());
     } catch (error) {
       console.error("Error fetching data:", error);
     } finally {
@@ -238,6 +244,10 @@ export default function IdeaDetailPage({ params }: { params: Promise<{ id: strin
           <TabsTrigger value="research">Research</TabsTrigger>
           <TabsTrigger value="testing">Testing</TabsTrigger>
           <TabsTrigger value="traction">Traction</TabsTrigger>
+          <TabsTrigger value="twitter">
+            <Twitter className="h-4 w-4 mr-2" />
+            Twitter ({ideaTweets.length})
+          </TabsTrigger>
         </TabsList>
 
         {/* Research Tab */}
@@ -619,6 +629,88 @@ export default function IdeaDetailPage({ params }: { params: Promise<{ id: strin
               )}
             </CardContent>
           </Card>
+        </TabsContent>
+
+        {/* Twitter Tab */}
+        <TabsContent value="twitter" className="space-y-6">
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between">
+              <div>
+                <CardTitle>Tweets for this Idea</CardTitle>
+                <CardDescription>Content created for Twitter/X promotion</CardDescription>
+              </div>
+              <Link href={`/twitter/compose?ideaId=${id}`}>
+                <Button size="sm">
+                  <Plus className="h-4 w-4 mr-2" />
+                  New Tweet
+                </Button>
+              </Link>
+            </CardHeader>
+            <CardContent>
+              {ideaTweets.length === 0 ? (
+                <div className="text-center py-8">
+                  <Twitter className="h-12 w-12 mx-auto mb-4 text-muted-foreground opacity-20" />
+                  <p className="text-muted-foreground mb-4">
+                    No tweets created for this idea yet
+                  </p>
+                  <Link href={`/twitter/compose?ideaId=${id}`}>
+                    <Button variant="outline">
+                      <Send className="h-4 w-4 mr-2" />
+                      Create Your First Tweet
+                    </Button>
+                  </Link>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {ideaTweets.map((tweet) => (
+                    <div key={tweet.id} className="p-4 border rounded-lg">
+                      <div className="flex items-start justify-between">
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2 mb-2">
+                            <Badge variant="outline">{tweet.type}</Badge>
+                            <Badge variant={
+                              tweet.status === "published" ? "success" :
+                              tweet.status === "scheduled" ? "default" : "secondary"
+                            }>
+                              {tweet.status}
+                            </Badge>
+                            {tweet.scheduledFor && (
+                              <span className="text-xs text-muted-foreground">
+                                Scheduled: {new Date(tweet.scheduledFor).toLocaleString()}
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-sm">{tweet.content}</p>
+                          <p className="text-xs text-muted-foreground mt-2">
+                            Created: {new Date(tweet.createdAt).toLocaleDateString()}
+                          </p>
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={async () => {
+                            await fetch(`/api/twitter/tweets/${tweet.id}`, { method: "DELETE" });
+                            fetchAll();
+                          }}
+                        >
+                          <Trash2 className="h-4 w-4 text-destructive" />
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          <div className="flex justify-center">
+            <Link href="/twitter">
+              <Button variant="outline">
+                <Twitter className="h-4 w-4 mr-2" />
+                Go to Twitter Dashboard
+              </Button>
+            </Link>
+          </div>
         </TabsContent>
       </Tabs>
 

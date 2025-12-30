@@ -11,11 +11,13 @@ import {
   BarChart3,
   Settings,
   Zap,
+  Twitter,
 } from "lucide-react";
 
 const navigation = [
   { name: "Dashboard", href: "/", icon: LayoutDashboard },
   { name: "Ideas", href: "/ideas", icon: Lightbulb },
+  { name: "Twitter", href: "/twitter", icon: Twitter },
 ];
 
 export default function DashboardLayout({

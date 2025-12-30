@@ -286,3 +286,221 @@ export interface WaitlistEmail {
   openRate: number;
   replyCount: number;
 }
+
+// ============================================
+// Twitter/X Growth Engine Types
+// ============================================
+
+export type TwitterAccountStage = '0-1k' | '1k-10k' | '10k+';
+export type TwitterHealthStatus = 'healthy' | 'warning' | 'restricted';
+export type TwitterRelationshipTier = 'whale' | 'peer' | 'fan';
+export type TwitterInteractionType = 'reply' | 'like' | 'retweet' | 'quote' | 'dm' | 'mention';
+export type TwitterInteractionDirection = 'sent' | 'received';
+export type TweetType = 'single' | 'thread' | 'reply';
+export type TweetStatus = 'draft' | 'scheduled' | 'published' | 'failed';
+export type ThreadStructure = 'listicle' | 'story' | 'how-to' | 'contrarian' | 'case-study';
+export type ReplyType = 'value-add' | 'question' | 'personal-experience' | 'contrarian';
+export type EngagementStatus = 'pending' | 'completed' | 'skipped';
+export type MilestoneType = 'mrr' | 'users' | 'followers' | 'launch' | 'custom';
+export type MilestoneStatus = 'pending-approval' | 'scheduled' | 'published';
+export type Priority = 'high' | 'medium' | 'low';
+
+// Twitter Account
+export interface TwitterAccountLimits {
+  dailyTweets: { used: number; max: number };
+  dailyFollows: { used: number; max: number };
+  dailyDMs: { used: number; max: number };
+  dailyLikes: { used: number; max: number };
+}
+
+export interface TwitterAccount {
+  id: string;
+  handle: string;
+  followers: number;
+  following: number;
+  isPremium: boolean;
+  stage: TwitterAccountStage;
+  healthStatus: TwitterHealthStatus;
+  dailyLimits: TwitterAccountLimits;
+  followerVelocity?: number;
+  engagementRate?: number;
+  avgImpressions?: number;
+  warnings: string[];
+  updatedAt: string;
+}
+
+// Twitter Relationship CRM
+export interface TwitterInteraction {
+  id: string;
+  relationshipId: string;
+  type: TwitterInteractionType;
+  direction: TwitterInteractionDirection;
+  tweetId?: string;
+  content?: string;
+  createdAt: string;
+}
+
+export interface TwitterRelationship {
+  id: string;
+  handle: string;
+  displayName?: string;
+  avatarUrl?: string;
+  tier: TwitterRelationshipTier;
+  niche: string[];
+  followsYou: boolean;
+  youFollow: boolean;
+  mutualFollowDate?: string;
+  priority: Priority;
+  notes?: string;
+  tags: string[];
+  lastInteraction?: string;
+  reciprocityScore: number;
+  totalReplies: number;
+  totalLikes: number;
+  totalDMs: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// Tweets
+export interface TweetDerivedFrom {
+  painPoints?: string[];
+  interviewQuotes?: string[];
+  competitorGaps?: string[];
+}
+
+export interface TweetMetrics {
+  id: string;
+  tweetId: string;
+  impressions: number;
+  engagements: number;
+  likes: number;
+  retweets: number;
+  replies: number;
+  quotes: number;
+  profileVisits: number;
+  linkClicks: number;
+  followersDelta: number;
+  engagementRate: number;
+  collectedAt: string;
+}
+
+export interface Tweet {
+  id: string;
+  ideaId?: string;
+  type: TweetType;
+  content: string;
+  mediaUrls?: string[];
+  threadId?: string;
+  threadPosition?: number;
+  derivedFrom?: TweetDerivedFrom;
+  status: TweetStatus;
+  scheduledFor?: string;
+  publishedAt?: string;
+  platformId?: string;
+  metrics?: TweetMetrics;
+  createdAt: string;
+}
+
+export interface Thread {
+  id: string;
+  ideaId?: string;
+  hook: string;
+  hookVariants: string[];
+  tweets: Tweet[];
+  structure: ThreadStructure;
+  cta: {
+    type: 'follow' | 'newsletter' | 'landing-page' | 'reply';
+    text: string;
+    url?: string;
+  };
+  performance?: {
+    totalImpressions: number;
+    totalEngagements: number;
+    threadCompletionRate: number;
+    ctaConversions: number;
+  };
+  createdAt: string;
+}
+
+// Engagement Queue
+export interface EngagementTarget {
+  id: string;
+  relationshipId: string;
+  relationship?: TwitterRelationship;
+  targetTweetId?: string;
+  targetTweetContent?: string;
+  targetTweetPostedAt?: string;
+  suggestedReply?: string;
+  replyType: ReplyType;
+  priority: Priority;
+  status: EngagementStatus;
+  dueBy?: string;
+  completedAt?: string;
+  createdAt: string;
+}
+
+// Build in Public Milestones
+export interface BIPMilestone {
+  id: string;
+  ideaId: string;
+  type: MilestoneType;
+  threshold?: number;
+  currentValue: number;
+  previousValue: number;
+  template: string;
+  generatedContent?: string;
+  status: MilestoneStatus;
+  triggeredAt?: string;
+  postedAt?: string;
+  createdAt: string;
+}
+
+// Twitter Analytics
+export interface TwitterGrowthMetrics {
+  period: 'day' | 'week' | 'month';
+  startDate: string;
+  endDate: string;
+  followersStart: number;
+  followersEnd: number;
+  netGain: number;
+  velocity: number;
+  projectedMonthly: number;
+}
+
+export interface TwitterContentMetrics {
+  tweetsPublished: number;
+  threadsPublished: number;
+  avgImpressions: number;
+  avgEngagementRate: number;
+  topTweetId?: string;
+  worstTweetId?: string;
+}
+
+export interface TwitterEngagementMetrics {
+  repliesSent: number;
+  profileVisitsFromReplies: number;
+  followersFromReplies: number;
+  replyROI: number;
+}
+
+export interface TwitterConversionMetrics {
+  landingPageClicks: number;
+  waitlistSignups: number;
+  conversionRate: number;
+  topConvertingTweetId?: string;
+}
+
+export interface TwitterAnalytics {
+  accountId: string;
+  period: 'day' | 'week' | 'month';
+  growth: TwitterGrowthMetrics;
+  content: TwitterContentMetrics;
+  engagement: TwitterEngagementMetrics;
+  conversion: TwitterConversionMetrics;
+  patterns: {
+    bestPostingTimes: { hour: number; engagementRate: number }[];
+    bestContentTypes: { type: string; avgEngagement: number }[];
+    topHashtags: { tag: string; impressions: number }[];
+  };
+}

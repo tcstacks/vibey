@@ -15,6 +15,21 @@ import type {
   WaitlistStatus,
   InterviewStatus,
   ContentStatus,
+  TwitterAccount,
+  TwitterRelationship,
+  TwitterInteraction,
+  Tweet,
+  TweetMetrics,
+  EngagementTarget,
+  BIPMilestone,
+  TwitterAccountStage,
+  TwitterHealthStatus,
+  TwitterRelationshipTier,
+  TweetType,
+  TweetStatus,
+  Priority,
+  EngagementStatus,
+  MilestoneStatus,
 } from "@/types";
 
 // Database singleton
@@ -137,6 +152,123 @@ function initializeSchema(database: Database.Database) {
       created_at TEXT DEFAULT (datetime('now'))
     );
 
+    -- Twitter account tracking
+    CREATE TABLE IF NOT EXISTS twitter_account (
+      id TEXT PRIMARY KEY,
+      handle TEXT NOT NULL,
+      followers INTEGER DEFAULT 0,
+      following INTEGER DEFAULT 0,
+      is_premium INTEGER DEFAULT 0,
+      stage TEXT DEFAULT '0-1k',
+      health_status TEXT DEFAULT 'healthy',
+      daily_limits TEXT,
+      follower_velocity REAL,
+      engagement_rate REAL,
+      avg_impressions REAL,
+      warnings TEXT,
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+
+    -- Twitter relationship CRM
+    CREATE TABLE IF NOT EXISTS twitter_relationships (
+      id TEXT PRIMARY KEY,
+      handle TEXT NOT NULL UNIQUE,
+      display_name TEXT,
+      avatar_url TEXT,
+      tier TEXT DEFAULT 'peer',
+      niche TEXT,
+      follows_you INTEGER DEFAULT 0,
+      you_follow INTEGER DEFAULT 0,
+      mutual_follow_date TEXT,
+      priority TEXT DEFAULT 'medium',
+      notes TEXT,
+      tags TEXT,
+      last_interaction TEXT,
+      reciprocity_score REAL DEFAULT 0,
+      total_replies INTEGER DEFAULT 0,
+      total_likes INTEGER DEFAULT 0,
+      total_dms INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+
+    -- Twitter interaction history
+    CREATE TABLE IF NOT EXISTS twitter_interactions (
+      id TEXT PRIMARY KEY,
+      relationship_id TEXT REFERENCES twitter_relationships(id) ON DELETE CASCADE,
+      type TEXT NOT NULL,
+      direction TEXT NOT NULL,
+      tweet_id TEXT,
+      content TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    -- Tweets and threads
+    CREATE TABLE IF NOT EXISTS tweets (
+      id TEXT PRIMARY KEY,
+      idea_id TEXT REFERENCES ideas(id) ON DELETE SET NULL,
+      type TEXT NOT NULL,
+      content TEXT NOT NULL,
+      media_urls TEXT,
+      thread_id TEXT,
+      thread_position INTEGER,
+      derived_from TEXT,
+      status TEXT DEFAULT 'draft',
+      scheduled_for TEXT,
+      published_at TEXT,
+      platform_id TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    -- Tweet performance metrics
+    CREATE TABLE IF NOT EXISTS tweet_metrics (
+      id TEXT PRIMARY KEY,
+      tweet_id TEXT REFERENCES tweets(id) ON DELETE CASCADE,
+      impressions INTEGER DEFAULT 0,
+      engagements INTEGER DEFAULT 0,
+      likes INTEGER DEFAULT 0,
+      retweets INTEGER DEFAULT 0,
+      replies INTEGER DEFAULT 0,
+      quotes INTEGER DEFAULT 0,
+      profile_visits INTEGER DEFAULT 0,
+      link_clicks INTEGER DEFAULT 0,
+      followers_delta INTEGER DEFAULT 0,
+      engagement_rate REAL DEFAULT 0,
+      collected_at TEXT DEFAULT (datetime('now'))
+    );
+
+    -- Engagement queue for reply guy strategy
+    CREATE TABLE IF NOT EXISTS engagement_queue (
+      id TEXT PRIMARY KEY,
+      relationship_id TEXT REFERENCES twitter_relationships(id) ON DELETE CASCADE,
+      target_tweet_id TEXT,
+      target_tweet_content TEXT,
+      target_tweet_posted_at TEXT,
+      suggested_reply TEXT,
+      reply_type TEXT,
+      priority TEXT DEFAULT 'medium',
+      status TEXT DEFAULT 'pending',
+      due_by TEXT,
+      completed_at TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    -- Build in public milestones
+    CREATE TABLE IF NOT EXISTS bip_milestones (
+      id TEXT PRIMARY KEY,
+      idea_id TEXT REFERENCES ideas(id) ON DELETE CASCADE,
+      type TEXT NOT NULL,
+      threshold INTEGER,
+      current_value INTEGER,
+      previous_value INTEGER,
+      template TEXT,
+      generated_content TEXT,
+      status TEXT DEFAULT 'pending-approval',
+      triggered_at TEXT,
+      posted_at TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+
     -- Create indexes
     CREATE INDEX IF NOT EXISTS idx_pain_points_idea ON pain_points(idea_id);
     CREATE INDEX IF NOT EXISTS idx_landing_pages_idea ON landing_pages(idea_id);
@@ -147,6 +279,15 @@ function initializeSchema(database: Database.Database) {
     CREATE INDEX IF NOT EXISTS idx_interviews_idea ON interviews(idea_id);
     CREATE INDEX IF NOT EXISTS idx_competitors_idea ON competitors(idea_id);
     CREATE INDEX IF NOT EXISTS idx_content_idea ON content(idea_id);
+    CREATE INDEX IF NOT EXISTS idx_twitter_rel_handle ON twitter_relationships(handle);
+    CREATE INDEX IF NOT EXISTS idx_twitter_rel_priority ON twitter_relationships(priority);
+    CREATE INDEX IF NOT EXISTS idx_twitter_interactions_rel ON twitter_interactions(relationship_id);
+    CREATE INDEX IF NOT EXISTS idx_tweets_idea ON tweets(idea_id);
+    CREATE INDEX IF NOT EXISTS idx_tweets_status ON tweets(status);
+    CREATE INDEX IF NOT EXISTS idx_tweet_metrics_tweet ON tweet_metrics(tweet_id);
+    CREATE INDEX IF NOT EXISTS idx_engagement_queue_status ON engagement_queue(status);
+    CREATE INDEX IF NOT EXISTS idx_engagement_queue_due ON engagement_queue(due_by);
+    CREATE INDEX IF NOT EXISTS idx_bip_milestones_idea ON bip_milestones(idea_id);
   `);
 }
 
@@ -747,4 +888,679 @@ export function getValidationRecommendation(ideaId: string): 'kill' | 'pivot' | 
   }
 
   return 'continue';
+}
+
+// ============================================
+// Twitter/X Growth Engine CRUD Operations
+// ============================================
+
+// Twitter Account
+export const twitterAccount = {
+  get(): TwitterAccount | null {
+    const db = getDb();
+    const row = db.prepare("SELECT * FROM twitter_account LIMIT 1").get() as any;
+    return row ? mapRowToTwitterAccount(row) : null;
+  },
+
+  create(data: Omit<TwitterAccount, "id" | "updatedAt">): TwitterAccount {
+    const db = getDb();
+    const id = generateId();
+    const now = new Date().toISOString();
+    db.prepare(`
+      INSERT INTO twitter_account (id, handle, followers, following, is_premium, stage, health_status, daily_limits, follower_velocity, engagement_rate, avg_impressions, warnings, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      data.handle,
+      data.followers || 0,
+      data.following || 0,
+      data.isPremium ? 1 : 0,
+      data.stage || '0-1k',
+      data.healthStatus || 'healthy',
+      data.dailyLimits ? JSON.stringify(data.dailyLimits) : null,
+      data.followerVelocity || null,
+      data.engagementRate || null,
+      data.avgImpressions || null,
+      data.warnings ? JSON.stringify(data.warnings) : null,
+      now
+    );
+    return this.get()!;
+  },
+
+  update(data: Partial<Omit<TwitterAccount, "id">>): TwitterAccount | null {
+    const db = getDb();
+    const existing = this.get();
+    if (!existing) return null;
+
+    const updates = [];
+    const values = [];
+    if (data.handle !== undefined) { updates.push("handle = ?"); values.push(data.handle); }
+    if (data.followers !== undefined) { updates.push("followers = ?"); values.push(data.followers); }
+    if (data.following !== undefined) { updates.push("following = ?"); values.push(data.following); }
+    if (data.isPremium !== undefined) { updates.push("is_premium = ?"); values.push(data.isPremium ? 1 : 0); }
+    if (data.stage !== undefined) { updates.push("stage = ?"); values.push(data.stage); }
+    if (data.healthStatus !== undefined) { updates.push("health_status = ?"); values.push(data.healthStatus); }
+    if (data.dailyLimits !== undefined) { updates.push("daily_limits = ?"); values.push(JSON.stringify(data.dailyLimits)); }
+    if (data.followerVelocity !== undefined) { updates.push("follower_velocity = ?"); values.push(data.followerVelocity); }
+    if (data.engagementRate !== undefined) { updates.push("engagement_rate = ?"); values.push(data.engagementRate); }
+    if (data.avgImpressions !== undefined) { updates.push("avg_impressions = ?"); values.push(data.avgImpressions); }
+    if (data.warnings !== undefined) { updates.push("warnings = ?"); values.push(JSON.stringify(data.warnings)); }
+    updates.push("updated_at = ?");
+    values.push(new Date().toISOString());
+    values.push(existing.id);
+
+    db.prepare(`UPDATE twitter_account SET ${updates.join(", ")} WHERE id = ?`).run(...values);
+    return this.get();
+  },
+};
+
+// Twitter Relationships CRM
+export const twitterRelationships = {
+  getAll(): TwitterRelationship[] {
+    const db = getDb();
+    const rows = db.prepare("SELECT * FROM twitter_relationships ORDER BY priority DESC, reciprocity_score DESC").all() as any[];
+    return rows.map(mapRowToTwitterRelationship);
+  },
+
+  getByTier(tier: TwitterRelationshipTier): TwitterRelationship[] {
+    const db = getDb();
+    const rows = db.prepare("SELECT * FROM twitter_relationships WHERE tier = ? ORDER BY priority DESC, reciprocity_score DESC").all(tier) as any[];
+    return rows.map(mapRowToTwitterRelationship);
+  },
+
+  getByHandle(handle: string): TwitterRelationship | null {
+    const db = getDb();
+    const row = db.prepare("SELECT * FROM twitter_relationships WHERE handle = ?").get(handle) as any;
+    return row ? mapRowToTwitterRelationship(row) : null;
+  },
+
+  getById(id: string): TwitterRelationship | null {
+    const db = getDb();
+    const row = db.prepare("SELECT * FROM twitter_relationships WHERE id = ?").get(id) as any;
+    return row ? mapRowToTwitterRelationship(row) : null;
+  },
+
+  create(data: Omit<TwitterRelationship, "id" | "createdAt" | "updatedAt">): TwitterRelationship {
+    const db = getDb();
+    const id = generateId();
+    const now = new Date().toISOString();
+    db.prepare(`
+      INSERT INTO twitter_relationships (id, handle, display_name, avatar_url, tier, niche, follows_you, you_follow, mutual_follow_date, priority, notes, tags, last_interaction, reciprocity_score, total_replies, total_likes, total_dms, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      data.handle,
+      data.displayName || null,
+      data.avatarUrl || null,
+      data.tier || 'peer',
+      data.niche ? JSON.stringify(data.niche) : null,
+      data.followsYou ? 1 : 0,
+      data.youFollow ? 1 : 0,
+      data.mutualFollowDate || null,
+      data.priority || 'medium',
+      data.notes || null,
+      data.tags ? JSON.stringify(data.tags) : null,
+      data.lastInteraction || null,
+      data.reciprocityScore || 0,
+      data.totalReplies || 0,
+      data.totalLikes || 0,
+      data.totalDMs || 0,
+      now,
+      now
+    );
+    return this.getById(id)!;
+  },
+
+  update(id: string, data: Partial<Omit<TwitterRelationship, "id" | "createdAt">>): TwitterRelationship | null {
+    const db = getDb();
+    const existing = this.getById(id);
+    if (!existing) return null;
+
+    const updates = [];
+    const values = [];
+    if (data.handle !== undefined) { updates.push("handle = ?"); values.push(data.handle); }
+    if (data.displayName !== undefined) { updates.push("display_name = ?"); values.push(data.displayName); }
+    if (data.avatarUrl !== undefined) { updates.push("avatar_url = ?"); values.push(data.avatarUrl); }
+    if (data.tier !== undefined) { updates.push("tier = ?"); values.push(data.tier); }
+    if (data.niche !== undefined) { updates.push("niche = ?"); values.push(JSON.stringify(data.niche)); }
+    if (data.followsYou !== undefined) { updates.push("follows_you = ?"); values.push(data.followsYou ? 1 : 0); }
+    if (data.youFollow !== undefined) { updates.push("you_follow = ?"); values.push(data.youFollow ? 1 : 0); }
+    if (data.mutualFollowDate !== undefined) { updates.push("mutual_follow_date = ?"); values.push(data.mutualFollowDate); }
+    if (data.priority !== undefined) { updates.push("priority = ?"); values.push(data.priority); }
+    if (data.notes !== undefined) { updates.push("notes = ?"); values.push(data.notes); }
+    if (data.tags !== undefined) { updates.push("tags = ?"); values.push(JSON.stringify(data.tags)); }
+    if (data.lastInteraction !== undefined) { updates.push("last_interaction = ?"); values.push(data.lastInteraction); }
+    if (data.reciprocityScore !== undefined) { updates.push("reciprocity_score = ?"); values.push(data.reciprocityScore); }
+    if (data.totalReplies !== undefined) { updates.push("total_replies = ?"); values.push(data.totalReplies); }
+    if (data.totalLikes !== undefined) { updates.push("total_likes = ?"); values.push(data.totalLikes); }
+    if (data.totalDMs !== undefined) { updates.push("total_dms = ?"); values.push(data.totalDMs); }
+    updates.push("updated_at = ?");
+    values.push(new Date().toISOString());
+    values.push(id);
+
+    db.prepare(`UPDATE twitter_relationships SET ${updates.join(", ")} WHERE id = ?`).run(...values);
+    return this.getById(id);
+  },
+
+  delete(id: string): boolean {
+    const db = getDb();
+    const result = db.prepare("DELETE FROM twitter_relationships WHERE id = ?").run(id);
+    return result.changes > 0;
+  },
+
+  getHighPriority(): TwitterRelationship[] {
+    const db = getDb();
+    const rows = db.prepare("SELECT * FROM twitter_relationships WHERE priority IN ('high', 'critical') ORDER BY priority DESC, reciprocity_score DESC").all() as any[];
+    return rows.map(mapRowToTwitterRelationship);
+  },
+};
+
+// Twitter Interactions
+export const twitterInteractions = {
+  getByRelationshipId(relationshipId: string): TwitterInteraction[] {
+    const db = getDb();
+    const rows = db.prepare("SELECT * FROM twitter_interactions WHERE relationship_id = ? ORDER BY created_at DESC").all(relationshipId) as any[];
+    return rows.map(mapRowToTwitterInteraction);
+  },
+
+  create(data: Omit<TwitterInteraction, "id" | "createdAt">): TwitterInteraction {
+    const db = getDb();
+    const id = generateId();
+    const now = new Date().toISOString();
+    db.prepare(`
+      INSERT INTO twitter_interactions (id, relationship_id, type, direction, tweet_id, content, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(id, data.relationshipId, data.type, data.direction, data.tweetId || null, data.content || null, now);
+
+    // Update relationship stats
+    const relationship = twitterRelationships.getById(data.relationshipId);
+    if (relationship) {
+      const updateData: Partial<TwitterRelationship> = { lastInteraction: now };
+      if (data.type === 'reply') updateData.totalReplies = (relationship.totalReplies || 0) + 1;
+      if (data.type === 'like') updateData.totalLikes = (relationship.totalLikes || 0) + 1;
+      if (data.type === 'dm') updateData.totalDMs = (relationship.totalDMs || 0) + 1;
+      twitterRelationships.update(data.relationshipId, updateData);
+    }
+
+    return { id, ...data, createdAt: now };
+  },
+};
+
+// Tweets
+export const tweets = {
+  getAll(): Tweet[] {
+    const db = getDb();
+    const rows = db.prepare("SELECT * FROM tweets ORDER BY created_at DESC").all() as any[];
+    return rows.map(mapRowToTweet);
+  },
+
+  getById(id: string): Tweet | null {
+    const db = getDb();
+    const row = db.prepare("SELECT * FROM tweets WHERE id = ?").get(id) as any;
+    return row ? mapRowToTweet(row) : null;
+  },
+
+  getByIdeaId(ideaId: string): Tweet[] {
+    const db = getDb();
+    const rows = db.prepare("SELECT * FROM tweets WHERE idea_id = ? ORDER BY created_at DESC").all(ideaId) as any[];
+    return rows.map(mapRowToTweet);
+  },
+
+  getByStatus(status: TweetStatus): Tweet[] {
+    const db = getDb();
+    const rows = db.prepare("SELECT * FROM tweets WHERE status = ? ORDER BY created_at DESC").all(status) as any[];
+    return rows.map(mapRowToTweet);
+  },
+
+  getScheduled(): Tweet[] {
+    const db = getDb();
+    const rows = db.prepare("SELECT * FROM tweets WHERE status = 'scheduled' ORDER BY scheduled_for ASC").all() as any[];
+    return rows.map(mapRowToTweet);
+  },
+
+  getThread(threadId: string): Tweet[] {
+    const db = getDb();
+    const rows = db.prepare("SELECT * FROM tweets WHERE thread_id = ? ORDER BY thread_position ASC").all(threadId) as any[];
+    return rows.map(mapRowToTweet);
+  },
+
+  create(data: Omit<Tweet, "id" | "createdAt">): Tweet {
+    const db = getDb();
+    const id = generateId();
+    const now = new Date().toISOString();
+    db.prepare(`
+      INSERT INTO tweets (id, idea_id, type, content, media_urls, thread_id, thread_position, derived_from, status, scheduled_for, published_at, platform_id, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      data.ideaId || null,
+      data.type,
+      data.content,
+      data.mediaUrls ? JSON.stringify(data.mediaUrls) : null,
+      data.threadId || null,
+      data.threadPosition || null,
+      data.derivedFrom ? JSON.stringify(data.derivedFrom) : null,
+      data.status || 'draft',
+      data.scheduledFor || null,
+      data.publishedAt || null,
+      data.platformId || null,
+      now
+    );
+    return this.getById(id)!;
+  },
+
+  update(id: string, data: Partial<Omit<Tweet, "id" | "createdAt">>): Tweet | null {
+    const db = getDb();
+    const existing = this.getById(id);
+    if (!existing) return null;
+
+    const updates = [];
+    const values = [];
+    if (data.ideaId !== undefined) { updates.push("idea_id = ?"); values.push(data.ideaId); }
+    if (data.type !== undefined) { updates.push("type = ?"); values.push(data.type); }
+    if (data.content !== undefined) { updates.push("content = ?"); values.push(data.content); }
+    if (data.mediaUrls !== undefined) { updates.push("media_urls = ?"); values.push(JSON.stringify(data.mediaUrls)); }
+    if (data.threadId !== undefined) { updates.push("thread_id = ?"); values.push(data.threadId); }
+    if (data.threadPosition !== undefined) { updates.push("thread_position = ?"); values.push(data.threadPosition); }
+    if (data.derivedFrom !== undefined) { updates.push("derived_from = ?"); values.push(JSON.stringify(data.derivedFrom)); }
+    if (data.status !== undefined) { updates.push("status = ?"); values.push(data.status); }
+    if (data.scheduledFor !== undefined) { updates.push("scheduled_for = ?"); values.push(data.scheduledFor); }
+    if (data.publishedAt !== undefined) { updates.push("published_at = ?"); values.push(data.publishedAt); }
+    if (data.platformId !== undefined) { updates.push("platform_id = ?"); values.push(data.platformId); }
+    values.push(id);
+
+    if (updates.length > 0) {
+      db.prepare(`UPDATE tweets SET ${updates.join(", ")} WHERE id = ?`).run(...values);
+    }
+    return this.getById(id);
+  },
+
+  delete(id: string): boolean {
+    const db = getDb();
+    const result = db.prepare("DELETE FROM tweets WHERE id = ?").run(id);
+    return result.changes > 0;
+  },
+};
+
+// Tweet Metrics
+export const tweetMetrics = {
+  getByTweetId(tweetId: string): TweetMetrics | null {
+    const db = getDb();
+    const row = db.prepare("SELECT * FROM tweet_metrics WHERE tweet_id = ? ORDER BY collected_at DESC LIMIT 1").get(tweetId) as any;
+    return row ? mapRowToTweetMetrics(row) : null;
+  },
+
+  getHistory(tweetId: string): TweetMetrics[] {
+    const db = getDb();
+    const rows = db.prepare("SELECT * FROM tweet_metrics WHERE tweet_id = ? ORDER BY collected_at ASC").all(tweetId) as any[];
+    return rows.map(mapRowToTweetMetrics);
+  },
+
+  create(data: Omit<TweetMetrics, "id" | "collectedAt">): TweetMetrics {
+    const db = getDb();
+    const id = generateId();
+    const now = new Date().toISOString();
+    db.prepare(`
+      INSERT INTO tweet_metrics (id, tweet_id, impressions, engagements, likes, retweets, replies, quotes, profile_visits, link_clicks, followers_delta, engagement_rate, collected_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      data.tweetId,
+      data.impressions || 0,
+      data.engagements || 0,
+      data.likes || 0,
+      data.retweets || 0,
+      data.replies || 0,
+      data.quotes || 0,
+      data.profileVisits || 0,
+      data.linkClicks || 0,
+      data.followersDelta || 0,
+      data.engagementRate || 0,
+      now
+    );
+    return { id, ...data, collectedAt: now };
+  },
+
+  update(id: string, data: Partial<Omit<TweetMetrics, "id" | "collectedAt">>): TweetMetrics | null {
+    const db = getDb();
+    const row = db.prepare("SELECT * FROM tweet_metrics WHERE id = ?").get(id) as any;
+    if (!row) return null;
+
+    const updates = [];
+    const values = [];
+    if (data.impressions !== undefined) { updates.push("impressions = ?"); values.push(data.impressions); }
+    if (data.engagements !== undefined) { updates.push("engagements = ?"); values.push(data.engagements); }
+    if (data.likes !== undefined) { updates.push("likes = ?"); values.push(data.likes); }
+    if (data.retweets !== undefined) { updates.push("retweets = ?"); values.push(data.retweets); }
+    if (data.replies !== undefined) { updates.push("replies = ?"); values.push(data.replies); }
+    if (data.quotes !== undefined) { updates.push("quotes = ?"); values.push(data.quotes); }
+    if (data.profileVisits !== undefined) { updates.push("profile_visits = ?"); values.push(data.profileVisits); }
+    if (data.linkClicks !== undefined) { updates.push("link_clicks = ?"); values.push(data.linkClicks); }
+    if (data.followersDelta !== undefined) { updates.push("followers_delta = ?"); values.push(data.followersDelta); }
+    if (data.engagementRate !== undefined) { updates.push("engagement_rate = ?"); values.push(data.engagementRate); }
+    values.push(id);
+
+    if (updates.length > 0) {
+      db.prepare(`UPDATE tweet_metrics SET ${updates.join(", ")} WHERE id = ?`).run(...values);
+    }
+    return mapRowToTweetMetrics(db.prepare("SELECT * FROM tweet_metrics WHERE id = ?").get(id) as any);
+  },
+};
+
+// Engagement Queue
+export const engagementQueue = {
+  getAll(): EngagementTarget[] {
+    const db = getDb();
+    const rows = db.prepare("SELECT * FROM engagement_queue ORDER BY priority DESC, due_by ASC").all() as any[];
+    return rows.map(mapRowToEngagementTarget);
+  },
+
+  getPending(): EngagementTarget[] {
+    const db = getDb();
+    const rows = db.prepare("SELECT * FROM engagement_queue WHERE status = 'pending' ORDER BY priority DESC, due_by ASC").all() as any[];
+    return rows.map(mapRowToEngagementTarget);
+  },
+
+  getById(id: string): EngagementTarget | null {
+    const db = getDb();
+    const row = db.prepare("SELECT * FROM engagement_queue WHERE id = ?").get(id) as any;
+    return row ? mapRowToEngagementTarget(row) : null;
+  },
+
+  getByRelationshipId(relationshipId: string): EngagementTarget[] {
+    const db = getDb();
+    const rows = db.prepare("SELECT * FROM engagement_queue WHERE relationship_id = ? ORDER BY created_at DESC").all(relationshipId) as any[];
+    return rows.map(mapRowToEngagementTarget);
+  },
+
+  create(data: Omit<EngagementTarget, "id" | "createdAt">): EngagementTarget {
+    const db = getDb();
+    const id = generateId();
+    const now = new Date().toISOString();
+    db.prepare(`
+      INSERT INTO engagement_queue (id, relationship_id, target_tweet_id, target_tweet_content, target_tweet_posted_at, suggested_reply, reply_type, priority, status, due_by, completed_at, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      data.relationshipId,
+      data.targetTweetId || null,
+      data.targetTweetContent || null,
+      data.targetTweetPostedAt || null,
+      data.suggestedReply || null,
+      data.replyType || null,
+      data.priority || 'medium',
+      data.status || 'pending',
+      data.dueBy || null,
+      data.completedAt || null,
+      now
+    );
+    return this.getById(id)!;
+  },
+
+  complete(id: string): EngagementTarget | null {
+    const db = getDb();
+    const now = new Date().toISOString();
+    db.prepare("UPDATE engagement_queue SET status = 'completed', completed_at = ? WHERE id = ?").run(now, id);
+    return this.getById(id);
+  },
+
+  skip(id: string): EngagementTarget | null {
+    const db = getDb();
+    db.prepare("UPDATE engagement_queue SET status = 'skipped' WHERE id = ?").run(id);
+    return this.getById(id);
+  },
+
+  delete(id: string): boolean {
+    const db = getDb();
+    const result = db.prepare("DELETE FROM engagement_queue WHERE id = ?").run(id);
+    return result.changes > 0;
+  },
+};
+
+// Build in Public Milestones
+export const bipMilestones = {
+  getAll(): BIPMilestone[] {
+    const db = getDb();
+    const rows = db.prepare("SELECT * FROM bip_milestones ORDER BY created_at DESC").all() as any[];
+    return rows.map(mapRowToBIPMilestone);
+  },
+
+  getByIdeaId(ideaId: string): BIPMilestone[] {
+    const db = getDb();
+    const rows = db.prepare("SELECT * FROM bip_milestones WHERE idea_id = ? ORDER BY created_at DESC").all(ideaId) as any[];
+    return rows.map(mapRowToBIPMilestone);
+  },
+
+  getPending(): BIPMilestone[] {
+    const db = getDb();
+    const rows = db.prepare("SELECT * FROM bip_milestones WHERE status = 'pending-approval' ORDER BY triggered_at DESC").all() as any[];
+    return rows.map(mapRowToBIPMilestone);
+  },
+
+  getById(id: string): BIPMilestone | null {
+    const db = getDb();
+    const row = db.prepare("SELECT * FROM bip_milestones WHERE id = ?").get(id) as any;
+    return row ? mapRowToBIPMilestone(row) : null;
+  },
+
+  create(data: Omit<BIPMilestone, "id" | "createdAt">): BIPMilestone {
+    const db = getDb();
+    const id = generateId();
+    const now = new Date().toISOString();
+    db.prepare(`
+      INSERT INTO bip_milestones (id, idea_id, type, threshold, current_value, previous_value, template, generated_content, status, triggered_at, posted_at, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      data.ideaId,
+      data.type,
+      data.threshold || null,
+      data.currentValue || null,
+      data.previousValue || null,
+      data.template || null,
+      data.generatedContent || null,
+      data.status || 'pending-approval',
+      data.triggeredAt || null,
+      data.postedAt || null,
+      now
+    );
+    return this.getById(id)!;
+  },
+
+  update(id: string, data: Partial<Omit<BIPMilestone, "id" | "createdAt">>): BIPMilestone | null {
+    const db = getDb();
+    const existing = this.getById(id);
+    if (!existing) return null;
+
+    const updates = [];
+    const values = [];
+    if (data.type !== undefined) { updates.push("type = ?"); values.push(data.type); }
+    if (data.threshold !== undefined) { updates.push("threshold = ?"); values.push(data.threshold); }
+    if (data.currentValue !== undefined) { updates.push("current_value = ?"); values.push(data.currentValue); }
+    if (data.previousValue !== undefined) { updates.push("previous_value = ?"); values.push(data.previousValue); }
+    if (data.template !== undefined) { updates.push("template = ?"); values.push(data.template); }
+    if (data.generatedContent !== undefined) { updates.push("generated_content = ?"); values.push(data.generatedContent); }
+    if (data.status !== undefined) { updates.push("status = ?"); values.push(data.status); }
+    if (data.triggeredAt !== undefined) { updates.push("triggered_at = ?"); values.push(data.triggeredAt); }
+    if (data.postedAt !== undefined) { updates.push("posted_at = ?"); values.push(data.postedAt); }
+    values.push(id);
+
+    if (updates.length > 0) {
+      db.prepare(`UPDATE bip_milestones SET ${updates.join(", ")} WHERE id = ?`).run(...values);
+    }
+    return this.getById(id);
+  },
+
+  approve(id: string): BIPMilestone | null {
+    return this.update(id, { status: 'scheduled' });
+  },
+
+  markPosted(id: string): BIPMilestone | null {
+    return this.update(id, { status: 'published', postedAt: new Date().toISOString() });
+  },
+
+  delete(id: string): boolean {
+    const db = getDb();
+    const result = db.prepare("DELETE FROM bip_milestones WHERE id = ?").run(id);
+    return result.changes > 0;
+  },
+};
+
+// Twitter mapping functions
+function mapRowToTwitterAccount(row: any): TwitterAccount {
+  return {
+    id: row.id,
+    handle: row.handle,
+    followers: row.followers || 0,
+    following: row.following || 0,
+    isPremium: row.is_premium === 1,
+    stage: row.stage as TwitterAccountStage,
+    healthStatus: row.health_status as TwitterHealthStatus,
+    dailyLimits: row.daily_limits ? JSON.parse(row.daily_limits) : undefined,
+    followerVelocity: row.follower_velocity,
+    engagementRate: row.engagement_rate,
+    avgImpressions: row.avg_impressions,
+    warnings: row.warnings ? JSON.parse(row.warnings) : undefined,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapRowToTwitterRelationship(row: any): TwitterRelationship {
+  return {
+    id: row.id,
+    handle: row.handle,
+    displayName: row.display_name,
+    avatarUrl: row.avatar_url,
+    tier: row.tier as TwitterRelationshipTier,
+    niche: row.niche ? JSON.parse(row.niche) : [],
+    followsYou: row.follows_you === 1,
+    youFollow: row.you_follow === 1,
+    mutualFollowDate: row.mutual_follow_date,
+    priority: row.priority as Priority,
+    notes: row.notes,
+    tags: row.tags ? JSON.parse(row.tags) : [],
+    lastInteraction: row.last_interaction,
+    reciprocityScore: row.reciprocity_score || 0,
+    totalReplies: row.total_replies || 0,
+    totalLikes: row.total_likes || 0,
+    totalDMs: row.total_dms || 0,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapRowToTwitterInteraction(row: any): TwitterInteraction {
+  return {
+    id: row.id,
+    relationshipId: row.relationship_id,
+    type: row.type,
+    direction: row.direction,
+    tweetId: row.tweet_id,
+    content: row.content,
+    createdAt: row.created_at,
+  };
+}
+
+function mapRowToTweet(row: any): Tweet {
+  return {
+    id: row.id,
+    ideaId: row.idea_id,
+    type: row.type as TweetType,
+    content: row.content,
+    mediaUrls: row.media_urls ? JSON.parse(row.media_urls) : undefined,
+    threadId: row.thread_id,
+    threadPosition: row.thread_position,
+    derivedFrom: row.derived_from ? JSON.parse(row.derived_from) : undefined,
+    status: row.status as TweetStatus,
+    scheduledFor: row.scheduled_for,
+    publishedAt: row.published_at,
+    platformId: row.platform_id,
+    createdAt: row.created_at,
+  };
+}
+
+function mapRowToTweetMetrics(row: any): TweetMetrics {
+  return {
+    id: row.id,
+    tweetId: row.tweet_id,
+    impressions: row.impressions || 0,
+    engagements: row.engagements || 0,
+    likes: row.likes || 0,
+    retweets: row.retweets || 0,
+    replies: row.replies || 0,
+    quotes: row.quotes || 0,
+    profileVisits: row.profile_visits || 0,
+    linkClicks: row.link_clicks || 0,
+    followersDelta: row.followers_delta || 0,
+    engagementRate: row.engagement_rate || 0,
+    collectedAt: row.collected_at,
+  };
+}
+
+function mapRowToEngagementTarget(row: any): EngagementTarget {
+  return {
+    id: row.id,
+    relationshipId: row.relationship_id,
+    targetTweetId: row.target_tweet_id,
+    targetTweetContent: row.target_tweet_content,
+    targetTweetPostedAt: row.target_tweet_posted_at,
+    suggestedReply: row.suggested_reply,
+    replyType: row.reply_type,
+    priority: row.priority as Priority,
+    status: row.status as EngagementStatus,
+    dueBy: row.due_by,
+    completedAt: row.completed_at,
+    createdAt: row.created_at,
+  };
+}
+
+function mapRowToBIPMilestone(row: any): BIPMilestone {
+  return {
+    id: row.id,
+    ideaId: row.idea_id,
+    type: row.type,
+    threshold: row.threshold,
+    currentValue: row.current_value,
+    previousValue: row.previous_value,
+    template: row.template,
+    generatedContent: row.generated_content,
+    status: row.status as MilestoneStatus,
+    triggeredAt: row.triggered_at,
+    postedAt: row.posted_at,
+    createdAt: row.created_at,
+  };
+}
+
+// Twitter Analytics
+export function getTwitterMetrics(): {
+  totalRelationships: number;
+  whales: number;
+  peers: number;
+  fans: number;
+  pendingEngagements: number;
+  tweetsThisWeek: number;
+  avgEngagementRate: number;
+} {
+  const db = getDb();
+
+  const total = db.prepare("SELECT COUNT(*) as count FROM twitter_relationships").get() as any;
+  const whales = db.prepare("SELECT COUNT(*) as count FROM twitter_relationships WHERE tier = 'whale'").get() as any;
+  const peers = db.prepare("SELECT COUNT(*) as count FROM twitter_relationships WHERE tier = 'peer'").get() as any;
+  const fans = db.prepare("SELECT COUNT(*) as count FROM twitter_relationships WHERE tier = 'fan'").get() as any;
+  const pending = db.prepare("SELECT COUNT(*) as count FROM engagement_queue WHERE status = 'pending'").get() as any;
+
+  const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+  const tweetsThisWeek = db.prepare("SELECT COUNT(*) as count FROM tweets WHERE created_at > ?").get(weekAgo) as any;
+
+  const avgEngagement = db.prepare("SELECT AVG(engagement_rate) as avg FROM tweet_metrics").get() as any;
+
+  return {
+    totalRelationships: total?.count || 0,
+    whales: whales?.count || 0,
+    peers: peers?.count || 0,
+    fans: fans?.count || 0,
+    pendingEngagements: pending?.count || 0,
+    tweetsThisWeek: tweetsThisWeek?.count || 0,
+    avgEngagementRate: avgEngagement?.avg || 0,
+  };
 }
